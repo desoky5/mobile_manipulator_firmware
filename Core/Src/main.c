@@ -49,6 +49,12 @@ TIM_HandleTypeDef htim9;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+volatile int16_t encoderR_ticks = 0;
+volatile int16_t encoderL_ticks = 0;
+volatile float motorR_rpm = 0.0f;
+volatile float motorL_rpm = 0.0f;
+volatile int16_t global_raw_enc1 = 0;
+volatile int16_t global_raw_enc2 = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -136,6 +142,11 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+  // Start Hardware Quadrature Trackers
+  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // Encoder 1 (PA6/PA7)
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); // Encoder 2 (PB6/PB7)
+  // Start our 100ms math clock loop in interrupt mode
+  HAL_TIM_Base_Start_IT(&htim5);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -564,6 +575,25 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM5) // Triggers reliably every 100 milliseconds
+  {
+    // 1. Capture the raw counter accumulations (cast to signed 16-bit to handle backward tracking)
+   global_raw_enc1 = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
+   global_raw_enc2 = (int16_t)__HAL_TIM_GET_COUNTER(&htim4);
+
+    // 2. Clear the hardware counters instantly so the next 100ms window starts from 0
+    __HAL_TIM_SET_COUNTER(&htim3, 0);
+    __HAL_TIM_SET_COUNTER(&htim4, 0);
+
+    // 3. Compute RPM: (ticks / 11880.0) * 10hz * 60s
+    // 11 CPR * 4 (Quadrature) * 270 Gear Ratio = 11880 Ticks Per Revolution
+    motorR_rpm = ((float)global_raw_enc1 / 44.0f) * 600.0f;
+    motorL_rpm = ((float)global_raw_enc2 / 44.0f) * 600.0f;
+  }
+}
+
 /* USER CODE END 4 */
 
 /**

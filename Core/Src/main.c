@@ -26,11 +26,23 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+// --- PID CONTROL CONFIGURATION STRUCTURE ---
+typedef struct {
+    float kp;
+    float ki;
+    float kd;
+    float prev_error;
+    float integral;
+    float output_limit;
+} PID_Controller;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define PPR   11880.0f   /* 11 CPR × 4 × 270                        */
+#define SAMPLE_MS       100.0f     /* TIM1 period                              */
+#define FF_GAIN         27.0f      /* 999 PWM / 37 RPM ≈ 27 per RPM           */
 
 
 /* USER CODE END PD */
@@ -41,20 +53,30 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim5;
 TIM_HandleTypeDef htim9;
+
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+uint8_t rx_byte;
+uint8_t current_command = 's';
 volatile int16_t encoderR_ticks = 0;
 volatile int16_t encoderL_ticks = 0;
 volatile float motorR_rpm = 0.0f;
 volatile float motorL_rpm = 0.0f;
 volatile int16_t global_raw_enc1 = 0;
 volatile int16_t global_raw_enc2 = 0;
+PID_Controller pid_left;
+PID_Controller pid_right;
+
+// Targets set by your main control loop (Desired RPM values)
+volatile float target_rpm_left = 0.0f;
+volatile float target_rpm_right = 0.0f;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,12 +88,46 @@ static void MX_TIM4_Init(void);
 static void MX_TIM5_Init(void);
 static void MX_TIM9_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+// ... your Set_Motor_Right and Set_Motor_Left functions are here ...
+
+float Compute_PID(PID_Controller *pid, float target, float actual)
+{
+    // 1. Calculate the current error
+    float error = target - actual;
+
+    // 2. Proportional Term
+    float p_term = pid->kp * error;
+    float ff_term = target * FF_GAIN;
+
+    // 3. Integral Term (Accumulate error over time)
+    pid->integral += error * 0.1f; // 0.1s is our TIM5 update time window
+
+    // Anti-windup clamping to prevent the integral from overflowing the motor limits
+    if (pid->integral > pid->output_limit) pid->integral = pid->output_limit;
+    if (pid->integral < -pid->output_limit) pid->integral = -pid->output_limit;
+    float i_term = pid->ki * pid->integral;
+
+    // 4. Derivative Term (Rate of change of the error)
+    float d_term = pid->kd * ((error - pid->prev_error) / 0.1f);
+    pid->prev_error = error;
+
+    // 5. Total Output
+    float output = ff_term + p_term + i_term + d_term;
+
+    // Clamp output to physical hardware safety bounds
+    if (output > pid->output_limit)  output = pid->output_limit;
+    if (output < -pid->output_limit) output = -pid->output_limit;
+
+    return output;
+}
+
 void Set_Motor_Right(float pwm_val)
 {
     if (pwm_val >= 0.0f) {
@@ -110,6 +166,8 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+pid_left.kp = 5.0f;  pid_left.ki = 0.5f;  pid_left.kd = 0.0f;  pid_left.prev_error = 0.0f;  pid_left.integral = 0.0f;  pid_left.output_limit = 999.0f;
+pid_right.kp = 5.0f; pid_right.ki = 0.5f; pid_right.kd = 0.0f; pid_right.prev_error = 0.0f; pid_right.integral = 0.0f; pid_right.output_limit = 999.0f;
 
   /* USER CODE END 1 */
 
@@ -137,16 +195,22 @@ int main(void)
   MX_TIM5_Init();
   MX_TIM9_Init();
   MX_USART1_UART_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   // Start Hardware Quadrature Trackers
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // Encoder 1 (PA6/PA7)
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); // Encoder 2 (PB6/PB7)
-  // Start our 100ms math clock loop in interrupt mode
-  HAL_TIM_Base_Start_IT(&htim5);
+  // 3. Clear pending flags entirely before turning on interrupts
+    __HAL_TIM_CLEAR_IT(&htim1, TIM_IT_UPDATE);
+    __HAL_TIM_CLEAR_IT(&htim1, TIM_IT_CC4);
+
+    // 4. Activate UART Reception Interrupt
+    HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+
+    // 5. Start the timer interrupt cleanly
+    HAL_TIM_Base_Start_IT(&htim1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -157,26 +221,15 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  // Test: forward at 50% duty for 3s, stop for 1s, repeat
-	  Set_Motor_Right(500.0f);
-	  Set_Motor_Left(500.0f);
+	  target_rpm_right = 20.0f;
+	  target_rpm_left  = 20.0f;
 	  HAL_GPIO_WritePin(Built_In_LED_GPIO_Port,Built_In_LED_Pin, GPIO_PIN_RESET); // LED ON
 	  HAL_Delay(7000);
 
-	  Set_Motor_Right(0.0f);
-	  Set_Motor_Left(0.0f);
+	  target_rpm_right = 0.0f;
+	  target_rpm_left  = 0.0f;
 	  HAL_GPIO_WritePin(Built_In_LED_GPIO_Port,Built_In_LED_Pin, GPIO_PIN_SET); // LED OFF
 	  HAL_Delay(1000);
-
-	  Set_Motor_Right(500.0f);
-	  Set_Motor_Left(500.0f);
-	  HAL_GPIO_WritePin(Built_In_LED_GPIO_Port,Built_In_LED_Pin, GPIO_PIN_RESET); // LED OFF
-	  HAL_Delay(7000);
-
-	  Set_Motor_Right(0.0f);
-	  Set_Motor_Left(00.0f);
-	  HAL_GPIO_WritePin(Built_In_LED_GPIO_Port,Built_In_LED_Pin, GPIO_PIN_SET); // LED OFF
-	  HAL_Delay(1000);
-
 
   }
   /* USER CODE END 3 */
@@ -226,6 +279,52 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 8399;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 999;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
 }
 
 /**
@@ -427,6 +526,10 @@ static void MX_TIM5_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_OC_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
@@ -446,6 +549,11 @@ static void MX_TIM5_Init(void)
     Error_Handler();
   }
   if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  if (HAL_TIM_OC_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -577,7 +685,7 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if (htim->Instance == TIM5) // Triggers reliably every 100 milliseconds
+  if (htim->Instance == TIM1)// Triggers reliably every 100 milliseconds
   {
     // 1. Capture the raw counter accumulations (cast to signed 16-bit to handle backward tracking)
    global_raw_enc1 = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
@@ -589,11 +697,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
     // 3. Compute RPM: (ticks / 11880.0) * 10hz * 60s
     // 11 CPR * 4 (Quadrature) * 270 Gear Ratio = 11880 Ticks Per Revolution
-    motorR_rpm = ((float)global_raw_enc1 / 44.0f) * 600.0f;
-    motorL_rpm = ((float)global_raw_enc2 / 44.0f) * 600.0f;
+    motorR_rpm = ((float)global_raw_enc1 / PPR) * (6000.0f /SAMPLE_MS);
+    motorL_rpm = ((float)global_raw_enc2 / PPR) * (6000.0f /SAMPLE_MS);
+    // C. Execute PID calculation engines to find the corrective PWM values
+    float pwm_out_right = Compute_PID(&pid_right, target_rpm_right, motorR_rpm);
+    float pwm_out_left  = Compute_PID(&pid_left, target_rpm_left, motorL_rpm);
+
+    // D. Directly apply calculated output adjustments to the physical H-Bridges
+    Set_Motor_Right(pwm_out_right);
+    Set_Motor_Left(pwm_out_left);
   }
 }
-
 /* USER CODE END 4 */
 
 /**

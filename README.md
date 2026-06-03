@@ -135,8 +135,8 @@ Open `mobile_manp.ioc` in STM32CubeMX to view or modify the full peripheral and 
 **Omar Desoky**
 Mechatronics & Robotics Engineering — Egypt-Japan University of Science and Technology (E-JUST)
 
-[![GitHub](https://img.shields.io/badge/GitHub-omar--desoky-181717?logo=github)](https://github.com/omar-desoky)
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?logo=linkedin)](https://www.linkedin.com/in/omar-desoky/)
+[![GitHub](https://img.shields.io/badge/GitHub-desoky5-181717?logo=github)](https://github.com/desoky5)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?logo=linkedin)](https://www.linkedin.com/in/omardesoky5/)
 
 ---
 

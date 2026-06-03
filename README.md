@@ -20,7 +20,7 @@ The Raspberry Pi 5 runs a full **ROS2 Jazzy** stack: LiDAR scanning, obstacle de
 
 ## System Architecture
 
-![System Architecture](System_Architecture.jpg)
+![System Architecture](https://github.com/desoky5/mobile_manipulator_firmware/blob/b1478070116e158ab456e9f4953c57a290e537c5/img/System%20Architecture.jpg)
 
 ---
 
